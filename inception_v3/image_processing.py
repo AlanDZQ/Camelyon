@@ -12,28 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Read and preprocess image data.读取和预处理图像数据
+"""Read and preprocess image data.
 
- 每次的图像处理在发生在一个图像上面，图像被读取并在多个线程上面并发地进行预处理，然后处理之后地结果图像会被
- 连接到一起形成一个单一的batch，用于训练和评估
  Image processing occurs on a single image at a time. Image are read and
  preprocessed in parallel across multiple threads. The resulting images
  are concatenated together to form a single batch for training or evaluation.
 
- 为网络提供处理之后的数据
  -- Provide processed image data for a network:
- inputs: Construct batches of evaluation examples of images. 用于评估的图像batch
- distorted_inputs: Construct batches of training examples of images. 用于训练的图像batch
- batch_inputs: Construct batches of training or evaluation examples of images. 用于评估和训练的图像batch
+ inputs: Construct batches of evaluation examples of images.
+ distorted_inputs: Construct batches of training examples of images.
+ batch_inputs: Construct batches of training or evaluation examples of images.
 
- -- Data processing:  解析包含一个训练图像的示例原型
+ -- Data processing:
  parse_example_proto: Parses an Example proto containing a training example
    of an image.
 
- -- Image decoding: 图像解码，将JPEG编码的字符串解码为3-D float32张量。
+ -- Image decoding:
  decode_jpeg: Decode a JPEG encoded string into a 3-D float32 Tensor.
 
- -- Image preprocessing: 图像预处理：对一个图像进行解码和预处理，用于评估和训练
+ -- Image preprocessing:
  image_preprocessing: Decode and preprocess one image for evaluation or training
  distort_image: Distort one image for training a network.
  eval_image: Prepare one image for evaluation.
@@ -47,19 +44,19 @@ import tensorflow as tf
 
 FLAGS = tf.app.flags.FLAGS
 
-#在一个batch里面要被处理的图像的数量
 tf.app.flags.DEFINE_integer('batch_size', 32,
                             """Number of images to process in a batch.""")
 # Arjun - updated
-# 图像的尺寸
 tf.app.flags.DEFINE_integer('image_size', 256,
                             """Provide square images of this size.""")
-#每个tower里面预处理线程的数量
+
+# Images are preprocessed asynchronously using multiple threads specified by
+# --num_preprocss_threads and the resulting processed images are stored in a
+# random shuffling queue. In charge of multi-threads IO read from file_name queue.
+
 tf.app.flags.DEFINE_integer('num_preprocess_threads', 4,
                             """Number of preprocessing threads per tower. """
                             """Please make this a multiple of 4.""")
-
-#在训练的时候，并行读取器的个数
 tf.app.flags.DEFINE_integer('num_readers', 4,
                             """Number of parallel readers during train.""")
 
@@ -79,16 +76,11 @@ tf.app.flags.DEFINE_integer('input_queue_memory_factor', 4,
                             """Default is ideal but try smaller values, e.g. """
                             """4, 2 or 1, if host memory is constrained. See """
                             """comments in code for more details.""")
-
+#input_queue_memory_factor decides the size of image queue factror*1024 images
 
 def inputs(dataset, batch_size=None, num_preprocess_threads=None):
     """Generate batches of ImageNet images for evaluation.
 
-    产生一系列ImageNet网络图像用于评估
-
-    这个函数用作评估网络的输入
-    请注意，评估过程中会发生一些（最小）图像预处理
-    包括中心裁剪和调整图像以适应网络。
     Use this function as the inputs for evaluating a network.
 
     Note that some (minimal) image preprocessing occurs during evaluation
@@ -105,13 +97,11 @@ def inputs(dataset, batch_size=None, num_preprocess_threads=None):
                                          image_size, 3].
       labels: 1-D integer Tensor of [FLAGS.batch_size].
     """
-    #如果没有batch_size参数，那么就使用初始化flags时预先定义好的batch_size的参数值
     if not batch_size:
         batch_size = FLAGS.batch_size
 
     # Force all input processing onto CPU in order to reserve the GPU for
     # the forward inference and back-propagation.
-    # 强制将所有对输入的处理放到CPU上面，为前向传播和后向传播预留GPU
     with tf.device('/cpu:0'):
         images, labels = batch_inputs(
             dataset, batch_size, train=False,
@@ -122,13 +112,9 @@ def inputs(dataset, batch_size=None, num_preprocess_threads=None):
 
 
 def distorted_inputs(dataset, batch_size=None, num_preprocess_threads=None):
+
     """Generate batches of distorted versions of ImageNet images.
-     生成批量的扭曲版本的ImageNet图像。
 
-     使用此功能作为训练网络的输入。
-
-     歪曲图像为增加数据提供了一种有用的技术
-     在训练期间设置，以使网络不因为图像的角度而影响标签
     Use this function as the inputs for training a network.
 
     Distorting images provides a useful technique for augmenting the data
@@ -162,7 +148,6 @@ def distorted_inputs(dataset, batch_size=None, num_preprocess_threads=None):
 def decode_png(image_buffer, scope=None):
     """Decode a PNG string into one 3-D float image Tensor.
 
-     将一个png字符流解码成一个三维浮点图像张量
     Args:
       image_buffer: scalar string Tensor.
       scope: Optional scope for op_scope.
@@ -183,7 +168,6 @@ def decode_png(image_buffer, scope=None):
 
 def decode_jpeg(image_buffer, scope=None):
     """Decode a JPEG string into one 3-D float image Tensor.
-     将一个JPEG字符流解码成一个三维浮点图像张量
 
     Args:
       image_buffer: scalar string Tensor.
@@ -208,10 +192,6 @@ def decode_jpeg(image_buffer, scope=None):
 def distort_color(image, thread_id=0, scope=None):
     """Distort the color of the image.
 
-    扭曲图像的颜色。
-    每种颜色失真都是不可交换的，因此颜色操作的顺序也是
-    非常重要的。 理想情况下，我们会随机排列颜色操作的顺序。
-    而不是增加这种复杂程度，我们对于每个预处理线程会选择不一样的颜色处理顺序。
     Each color distortion is non-commutative and thus ordering of the color ops
     matters. Ideally we would randomly permute the ordering of the color ops.
     Rather then adding that level of complication, we select a distinct ordering
@@ -245,7 +225,6 @@ def distort_color(image, thread_id=0, scope=None):
 
 def distort_image(image, height, width, thread_id=0, scope=None):
     """Distort one image for training a network.
-    为了训练网络扭曲一个图像
 
     Distorting images provides a useful technique for augmenting the data
     set during training in order to make the network invariant to aspects
@@ -275,7 +254,6 @@ def distort_image(image, height, width, thread_id=0, scope=None):
 
 def eval_image(image, height, width, scope=None):
     """Prepare one image for evaluation.
-    准备用来评估的图像
 
     Args:
       image: 3-D float Tensor
@@ -300,7 +278,6 @@ def eval_image(image, height, width, scope=None):
 
 def image_preprocessing(image_buffer, train, thread_id):
     """Decode and preprocess one image for evaluation or training.
-    解码或者预处理一个图像用作评估或者训练
 
     Args:
       image_buffer: PNG encoded string Tensor
@@ -316,28 +293,27 @@ def image_preprocessing(image_buffer, train, thread_id):
 
     image = decode_png(image_buffer)
 
-    # height = FLAGS.image_size
-    # width = FLAGS.image_size
+    height = FLAGS.image_size
+    width = FLAGS.image_size
     image = tf.reshape(image, shape=[FLAGS.image_size, FLAGS.image_size, 3])
 
     # subtract channel wise mean
-    mean = tf.reduce_mean(image, axis=[0, 1])
-    mean = tf.reshape(mean, [1, 1, 3])
-    image = tf.subtract(image, mean)
+    # mean = tf.reduce_mean(image, axis=[0, 1])
+    # mean = tf.reshape(mean, [1, 1, 3])
+    # image = tf.subtract(image, mean)
 
-    # Arjun - updated
+    #
     # if train:
     #     image = distort_image(image, height, width, thread_id)
     # else:
     #     image = eval_image(image, height, width)
-
+    #
     return image
 
 
 def parse_example_proto_heatmap(example_serialized):
     """
         Parses an Example proto containing a training example of an image.
-        解析包含训练图像的样本原型
 
     """
     # Dense features in Example proto.
@@ -391,6 +367,7 @@ def parse_example_proto(example_serialized):
     """
     # Dense features in Example proto.
     # Arjun - updated
+    #仅仅解析encoded和label两个特征，其余的没管．
     feature_map = {
         'image/encoded': tf.FixedLenFeature([], dtype=tf.string,
                                             default_value=''),
@@ -408,7 +385,6 @@ def parse_example_proto(example_serialized):
 def batch_inputs(dataset, batch_size, train, num_preprocess_threads=None,
                  num_readers=1):
     """Contruct batches of training or evaluation examples from the image dataset.
-        从图像集合里面提取出用来进行训练或者评估的batches
 
     Args:
       dataset: instance of Dataset class specifying the dataset.
@@ -425,6 +401,7 @@ def batch_inputs(dataset, batch_size, train, num_preprocess_threads=None,
     Raises:
       ValueError: if data is not found
     """
+    #一次性读取所有tf-records，并随机打乱
     with tf.name_scope('batch_processing'):
         if dataset.is_heatmap_data():
             data_files = dataset.data_files_heatmap()
@@ -434,7 +411,7 @@ def batch_inputs(dataset, batch_size, train, num_preprocess_threads=None,
         if data_files is None:
             raise ValueError('No data files found for this dataset')
 
-        # Create filename_queue
+        #filename_queue得到所有tf-records并混乱排序,构建图的过程debug看不到数据
         if train:
             filename_queue = tf.train.string_input_producer(data_files,
                                                             shuffle=True,
@@ -466,6 +443,15 @@ def batch_inputs(dataset, batch_size, train, num_preprocess_threads=None,
         # size: examples_per_shard * 16 * 1MB = 17.6GB
         min_queue_examples = examples_per_shard * FLAGS.input_queue_memory_factor
         if train:
+            #RandomShuffleQueue
+            #多个线程准备训练样本，并且把这些样本推入队列。
+            #一个训练线程执行一个训练操作，此操作会从队列中移除最小批次的样本（mini-batches)。
+            #解决IO读写跟不上gpu训练速度问题
+            #最少留min_queue_examples４０００个examples在randomShuffleQueue里
+            ''''A `RandomShuffleQueue` has bounded capacity; supports multiple
+    concurrent producers and consumers; and provides exactly-once
+    delivery.'''
+
             examples_queue = tf.RandomShuffleQueue(
                 capacity=min_queue_examples + 3 * batch_size,
                 min_after_dequeue=min_queue_examples,

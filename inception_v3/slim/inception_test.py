@@ -20,7 +20,6 @@ from __future__ import print_function
 import tensorflow as tf
 
 from inception_v3.slim import inception_model as inception
-#from camelyon16.inception.slim import inception_model as inception
 
 
 class InceptionTest(tf.test.TestCase):
@@ -96,7 +95,7 @@ class InceptionTest(tf.test.TestCase):
       self.assertListEqual(logits.get_shape().as_list(),
                            [None, num_classes])
       images = tf.random_uniform((batch_size, height, width, 3))
-      sess.run(tf.initialize_all_variables())
+      sess.run(tf.global_variables_initializer())
       output = sess.run(logits, {inputs: images.eval()})
       self.assertEquals(output.shape, (batch_size, num_classes))
 
@@ -109,7 +108,7 @@ class InceptionTest(tf.test.TestCase):
       logits, _ = inception.inception_v3(eval_inputs, num_classes,
                                          is_training=False)
       predictions = tf.argmax(logits, 1)
-      sess.run(tf.initialize_all_variables())
+      sess.run(tf.global_variables_initializer())
       output = sess.run(predictions)
       self.assertEquals(output.shape, (batch_size,))
 
@@ -126,7 +125,7 @@ class InceptionTest(tf.test.TestCase):
       logits, _ = inception.inception_v3(eval_inputs, num_classes,
                                          is_training=False)
       predictions = tf.argmax(logits, 1)
-      sess.run(tf.initialize_all_variables())
+      sess.run(tf.global_variables_initializer())
       output = sess.run(predictions)
       self.assertEquals(output.shape, (eval_batch_size,))
 

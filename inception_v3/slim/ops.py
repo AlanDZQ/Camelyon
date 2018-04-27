@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Contains convenience wrappers for typical Neural Network tf layers.
+"""Contains convenience wrappers for typical Neural Network TensorFlow layers.
 
    Additionally it maintains a collection with update_ops that need to be
-   updated after the ops have been computed, for exmaple to update moving means
+   updated after the ops have been computed, for example to update moving means
    and moving variances of batch_norm.
 
    Ops that have different behavior during training or eval have an is_training
@@ -34,10 +34,6 @@ from tensorflow.python.training import moving_averages
 from inception_v3.slim import losses
 from inception_v3.slim import scopes
 from inception_v3.slim import variables
-
-#from camelyon16.inception.slim import losses
-#from camelyon16.inception.slim import scopes
-#from camelyon16.inception.slim import variables
 
 # Used to keep the update ops done by batch_norm.
 UPDATE_OPS_COLLECTION = '_update_ops_'
@@ -72,7 +68,7 @@ def batch_norm(inputs,
     is_training: whether or not the model is in training mode.
     trainable: whether or not the variables should be trainable or not.
     restore: whether or not the variables should be marked for restore.
-    scope: Optional scope for variable_op_scope.
+    scope: Optional scope for variable_scope.
     reuse: whether or not the layer and its variables should be reused. To be
       able to reuse the layer scope must be given.
 
@@ -89,13 +85,13 @@ def batch_norm(inputs,
     if center:
       beta = variables.variable('beta',
                                 params_shape,
-                                initializer=None,
+                                initializer=tf.zeros_initializer(),
                                 trainable=trainable,
                                 restore=restore)
     if scale:
       gamma = variables.variable('gamma',
                                  params_shape,
-                                 initializer=None,
+                                 initializer=tf.ones_initializer(),
                                  trainable=trainable,
                                  restore=restore)
     # Create moving_mean and moving_variance add them to
@@ -103,13 +99,13 @@ def batch_norm(inputs,
     moving_collections = [moving_vars, tf.GraphKeys.MOVING_AVERAGE_VARIABLES]
     moving_mean = variables.variable('moving_mean',
                                      params_shape,
-                                     initializer=None,
+                                     initializer=tf.zeros_initializer(),
                                      trainable=False,
                                      restore=restore,
                                      collections=moving_collections)
     moving_variance = variables.variable('moving_variance',
                                          params_shape,
-                                         initializer=None,
+                                         initializer=tf.ones_initializer(),
                                          trainable=False,
                                          restore=restore,
                                          collections=moving_collections)
@@ -207,7 +203,7 @@ def conv2d(inputs,
     is_training: whether or not the model is in training mode.
     trainable: whether or not the variables should be trainable or not.
     restore: whether or not the variables should be marked for restore.
-    scope: Optional scope for variable_op_scope.
+    scope: Optional scope for variable_scope.
     reuse: whether or not the layer and its variables should be reused. To be
       able to reuse the layer scope must be given.
   Returns:
@@ -243,7 +239,7 @@ def conv2d(inputs,
                                   shape=bias_shape,
                                   initializer=bias_initializer,
                                   trainable=trainable,
-                                  restore=restore, reuse=reuse)
+                                  restore=restore)
       outputs = tf.nn.bias_add(conv, biases)
     if activation:
       outputs = activation(outputs)
@@ -282,7 +278,7 @@ def fc(inputs,
     is_training: whether or not the model is in training mode.
     trainable: whether or not the variables should be trainable or not.
     restore: whether or not the variables should be marked for restore.
-    scope: Optional scope for variable_op_scope.
+    scope: Optional scope for variable_scope.
     reuse: whether or not the layer and its variables should be reused. To be
       able to reuse the layer scope must be given.
 
@@ -327,7 +323,7 @@ def one_hot_encoding(labels, num_classes, scope=None):
   Args:
     labels: [batch_size] target labels.
     num_classes: total number of classes.
-    scope: Optional scope for op_scope.
+    scope: Optional scope for name_scope.
   Returns:
     one hot encoding of the labels.
   """
@@ -335,9 +331,9 @@ def one_hot_encoding(labels, num_classes, scope=None):
     batch_size = labels.get_shape()[0]
     indices = tf.expand_dims(tf.range(0, batch_size), 1)
     labels = tf.cast(tf.expand_dims(labels, 1), indices.dtype)
-    concated = tf.concat([indices, labels], 1)
+    concated = tf.concat(axis=1, values=[indices, labels])
     onehot_labels = tf.sparse_to_dense(
-        concated, tf.pack([batch_size, num_classes]), 1.0, 0.0)
+        concated, tf.stack([batch_size, num_classes]), 1.0, 0.0)
     onehot_labels.set_shape([batch_size, num_classes])
     return onehot_labels
 
@@ -358,7 +354,7 @@ def max_pool(inputs, kernel_size, stride=2, padding='VALID', scope=None):
       Can be an int if both strides are the same.  Note that presently
       both strides must have the same value.
     padding: the padding method, either 'VALID' or 'SAME'.
-    scope: Optional scope for op_scope.
+    scope: Optional scope for name_scope.
 
   Returns:
     a tensor representing the results of the pooling operation.
@@ -390,7 +386,7 @@ def avg_pool(inputs, kernel_size, stride=2, padding='VALID', scope=None):
       Can be an int if both strides are the same.  Note that presently
       both strides must have the same value.
     padding: the padding method, either 'VALID' or 'SAME'.
-    scope: Optional scope for op_scope.
+    scope: Optional scope for name_scope.
 
   Returns:
     a tensor representing the results of the pooling operation.
@@ -405,7 +401,7 @@ def avg_pool(inputs, kernel_size, stride=2, padding='VALID', scope=None):
 
 
 @scopes.add_arg_scope
-def dropout(inputs, keep_prob=0.5, is_training=True, scope=None, reuse=None):
+def dropout(inputs, keep_prob=0.5, is_training=True, scope=None):
   """Returns a dropout layer applied to the input.
 
   Args:
@@ -413,7 +409,7 @@ def dropout(inputs, keep_prob=0.5, is_training=True, scope=None, reuse=None):
     keep_prob: the probability of keeping each input unit.
     is_training: whether or not the model is in training mode. If so, dropout is
     applied and values scaled. Otherwise, inputs is returned.
-    scope: Optional scope for op_scope.
+    scope: Optional scope for name_scope.
 
   Returns:
     a tensor representing the output of the operation.
@@ -432,7 +428,7 @@ def flatten(inputs, scope=None):
 
   Args:
     inputs: a tensor of size [batch_size, ...].
-    scope: Optional scope for op_scope.
+    scope: Optional scope for name_scope.
 
   Returns:
     a flattened tensor with shape [batch_size, k].

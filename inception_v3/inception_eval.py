@@ -1,97 +1,103 @@
-"""
-在单个GPU上面评估inception
+# Copyright 2016 Google Inc. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+"""A library to evaluate Inception on a single GPU.
 """
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import sys
-sys.path.insert(0, '/home/arjun/MS/Thesis/CAMELYON-16/source')
+
 import math
 import os.path
 import time
 from datetime import datetime
 
 from inception_v3 import image_processing
-from inception_v3 import  inception_model as inception_model
-import external.utils as utils
+from inception_v3 import inception_model as inception
+import utils as utils
 import numpy as np
 import sklearn as sk
 import tensorflow as tf
-
 from inception_v3.dataset import Dataset
 from tensorflow.contrib import metrics
 
 FLAGS = tf.app.flags.FLAGS
 
-# checkpoint的保存路径
 CKPT_PATH = utils.EVAL_MODEL_CKPT_PATH
 
-# 数据集合的名称
 DATA_SET_NAME = 'TF-Records'
 
-# 写日志的目录
-tf.app.flags.DEFINE_string('eval_dir', utils.EVAL_DIR,
+tf.app.flags.DEFINE_string('eval_logs', utils.EVAL_LOGS,
                            """Directory where to write event logs.""")
-
-# 读取模型检查点的目录
-tf.app.flags.DEFINE_string('checkpoint_dir', utils.TRAIN_DIR,
+tf.app.flags.DEFINE_string('checkpoint_dir', utils.TRAIN_MODELS,
                            """Directory where to read model checkpoints.""")
 
-# 执行评估模型操作的频率
+# Flags governing the frequency of the eval.
 tf.app.flags.DEFINE_integer('eval_interval_secs', 60 * 5,
                             """How often to run the eval.""")
-# 是否就执行一次评估
 tf.app.flags.DEFINE_boolean('run_once', True,
                             """Whether to run eval only once.""")
 
-# 需要执行评估操作的数据实例的数量
+# Flags governing the data used for the eval.
 tf.app.flags.DEFINE_integer('num_examples', 10000,
                             """Number of examples to run.
                             We have 10000 examples.""")
-
-# subset 这次选用的是'validation'
 tf.app.flags.DEFINE_string('subset', 'validation',
                            """Either 'validation' or 'train'.""")
 
+# tf.app.flags.DEFINE_integer('batch_size', 40,
+#                             """Number of images to process in a batch.""")
+
 BATCH_SIZE = 100
 
+
 def _eval_once(saver, summary_writer, accuracy, summary_op, confusion_matrix_op):
-    """
-    执行一次评估
-    :param saver: 保存器
-    :param summary_writer:
-    :param accuracy:
-    :param summary_op:
-    :param confusion_matrix_op:
-    :return:
+    # def _eval_once(saver, summary_writer, accuracy, summary_op, confusion_matrix_op, logits, labels, dense_labels):
+
+    """Runs Eval once.
+
+    Args:
+      saver: Saver.Restore the moving average version of the learned variables for eval.
+      summary_writer: Summary writer.
+      top_1_op: Top 1 op.
+      top_5_op: Top 5 op.
+      summary_op: Summary op.
     """
     with tf.Session() as sess:
-        # 打印一下检查点路径
-        print(FLAGS.checkpoint_dir)
+        print(FLAGS.checkpoint_dir)#在train里
         ckpt = None
         if CKPT_PATH is not None:
             saver.restore(sess, CKPT_PATH)
-            # 从检查点的路径里面得到全局步数的信息
             global_step = CKPT_PATH.split('/')[-1].split('-')[-1]
             print('Succesfully loaded model from %s at step=%s.' %
                   (CKPT_PATH, global_step))
-
-        # ckpt的预设值就是None
         elif ckpt is None:
             ckpt = tf.train.latest_checkpoint(FLAGS.checkpoint_dir)
-            # 如果给定的检查点目录里面有检查点的信息，那么就将模型的检查点目录打印出来
             if ckpt and ckpt.model_checkpoint_path:
                 print(ckpt.model_checkpoint_path)
-                # 如果模型的检查点路径是绝对路径,就将该路径放到保存器里面
                 if os.path.isabs(ckpt.model_checkpoint_path):
-                    saver.restore(sess,ckpt.model_checkpoint_path)
+                    # Restores from checkpoint with absolute path.
+                    saver.restore(sess, ckpt.model_checkpoint_path)
                 else:
-                    # 不是绝对路径就把检查点的相对路径放到保存器里面
+                    # Restores from checkpoint with relative path.
                     saver.restore(sess, os.path.join(FLAGS.checkpoint_dir,
                                                      ckpt.model_checkpoint_path))
 
-                # 假设模型检查点路径是如下形式，从中提取出全局步数global_step
+                # Assuming model_checkpoint_path looks something like:
+                #   /my-favorite-path/imagenet_train/model.ckpt-0,
+                # extract global_step from it.
                 global_step = ckpt.model_checkpoint_path.split('/')[-1].split('-')[-1]
                 print('Succesfully loaded model from %s at step=%s.' %
                       (ckpt.model_checkpoint_path, global_step))
@@ -99,8 +105,8 @@ def _eval_once(saver, summary_writer, accuracy, summary_op, confusion_matrix_op)
             print('No checkpoint file found')
             return
 
-        # 开始了序列执行
-        coord = tf.train.Coordinator() # 创建的协调器，用来管理线程
+        # Start the queue runners.
+        coord = tf.train.Coordinator()
         try:
             threads = []
             for qr in tf.get_collection(tf.GraphKeys.QUEUE_RUNNERS):
@@ -108,8 +114,7 @@ def _eval_once(saver, summary_writer, accuracy, summary_op, confusion_matrix_op)
                                                  start=True))
 
             num_iter = int(math.ceil(FLAGS.num_examples / BATCH_SIZE))
-
-            # 计算预测正确的个数
+            # Counts the number of correct predictions.
             total_correct_count = 0
             total_false_positive_count = 0
             total_false_negative_count = 0
@@ -121,6 +126,9 @@ def _eval_once(saver, summary_writer, accuracy, summary_op, confusion_matrix_op)
             while step < num_iter and not coord.should_stop():
                 correct_count, confusion_matrix = \
                     sess.run([accuracy, confusion_matrix_op])
+
+                # correct_count, confusion_matrix, logits_v, labels_v, dense_labels_v = \
+                #     sess.run([accuracy, confusion_matrix_op, logits, labels, dense_labels])
 
                 total_correct_count += np.sum(correct_count)
                 total_false_positive_count += confusion_matrix[0][1]
@@ -142,7 +150,9 @@ def _eval_once(saver, summary_writer, accuracy, summary_op, confusion_matrix_op)
                                           examples_per_sec, sec_per_batch))
                     start_time = time.time()
 
-            # 计算准确率
+            # print('total_false_positive_count: %d' % total_false_positive_count)
+            # print('total_false_negative_count: %d' % total_false_negative_count)
+            # Compute precision @ 1.
             precision = total_correct_count / total_sample_count
             print('%s: precision = %.4f [%d examples]' %
                   (datetime.now(), precision, total_sample_count))
@@ -152,14 +162,13 @@ def _eval_once(saver, summary_writer, accuracy, summary_op, confusion_matrix_op)
             summary.value.add(tag='Precision', simple_value=precision)
             summary_writer.add_summary(summary, global_step)
 
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-except
             coord.request_stop(e)
 
         coord.request_stop()
         coord.join(threads, stop_grace_period_secs=10)
 
-# 参数dense_labels： 密集标签
-# logits ：未归一化的概率， 运行sklearn的相关方法计算评估的一些指标
+
 def calc_metrics(dense_labels, logits):
     print("Precision", sk.metrics.precision_score(dense_labels, logits))
     print("Recall", sk.metrics.recall_score(dense_labels, logits))
@@ -167,54 +176,66 @@ def calc_metrics(dense_labels, logits):
     print("confusion_matrix")
     print(sk.metrics.confusion_matrix(dense_labels, logits))
 
-# 在数据集合上评估模型的具体步骤
+
 def evaluate(dataset):
+    """Evaluate model on Dataset for a number of steps."""
     with tf.Graph().as_default():
-        # 从数据集合里面获取images和labels
+        # Get images and labels from the dataset.
         images, labels = image_processing.inputs(dataset, BATCH_SIZE)
 
-        # 给数据集合标签集合里面的类别数量+1
-        # 这里的+1是用标签0来标识未使用的背景类
+        # Number of classes in the Dataset label set plus 1.
+        # Label 0 is reserved for an (unused) background class.
         num_classes = dataset.num_classes()
 
-        # 建立一个Graph，这个图的作用就是从inference模型里面计算未归一化的概率（预测）
-        logits, _, _ = inception_model.inference(images,num_classes)
+        # Build a Graph that computes the logits predictions from the
+        # inference model.
+        logits, _, _ = inception.inference(images, num_classes)
 
-        # 把稀疏标签密集化
         sparse_labels = tf.reshape(labels, [BATCH_SIZE, 1])
         indices = tf.reshape(tf.range(BATCH_SIZE), [BATCH_SIZE, 1])
         concated = tf.concat(1, [indices, sparse_labels])
         num_classes = logits[0].get_shape()[-1].value
+
         dense_labels = tf.sparse_to_dense(concated,
                                           [BATCH_SIZE, num_classes],
                                           1, 0)
+        #argmax返回沿着某个维度最大值的位置#
         confusion_matrix_op = metrics.confusion_matrix(labels, tf.argmax(logits, axis=1))
+        # false_positive_op = metrics.streaming_false_positives(logits, dense_labels)
+        # false_negative_op = metrics.streaming_false_negatives(logits, dense_labels)
 
-        # 计算预测值, 输出最接近的前几名
+        # Calculate predictions.
+        '''predictions：预测的结果，预测矩阵大小为样本数×标注的label类的个数的二维矩阵。targets：实际的标签，大小为样本数。k：每个样本的预测结果的前k个最大的数里面是否包含targets
+        预测中的标签，一般都是取1，即取预测最大概率的索引与标签对比。name：名字。 '''
         accuracy = tf.nn.in_top_k(logits, labels, 1)
 
-        # 恢复用于评估移动平均版本的学习变量
+        # Restore the moving average version of the learned variables for eval.
         variable_averages = tf.train.ExponentialMovingAverage(
-            inception_model.MOVING_AVERAGE_DECAY)
+            inception.MOVING_AVERAGE_DECAY)
         variables_to_restore = variable_averages.variables_to_restore()
         saver = tf.train.Saver(variables_to_restore)
 
-        # 基于TF的Summaries集合建立summary操作
+        # Build the summary operation based on the TF collection of Summaries.
         summary_op = tf.summary.merge_all()
 
         graph_def = tf.get_default_graph().as_graph_def()
         summary_writer = tf.summary.FileWriter(FLAGS.eval_dir, graph_def=graph_def)
 
-        # 这里调用了上面定义好的一次评估的方法
         while True:
+            # _eval_once(saver, summary_writer, accuracy, summary_op, confusion_matrix_op, logits, labels, dense_labels)
+
             _eval_once(saver, summary_writer, accuracy, summary_op, confusion_matrix_op)
             if FLAGS.run_once:
                 break
             time.sleep(FLAGS.eval_interval_secs)
 
-# 获取用于评估的数据集合，执行评估操作
-dataset = Dataset(DATA_SET_NAME, utils.data_subset[2])
-evaluate(dataset)
 
 
 
+
+def main(unused_argv):
+    dataset = Dataset(DATA_SET_NAME, utils.data_subset[2])
+    evaluate(dataset)
+
+if __name__ == '__main__':
+    tf.app.run()

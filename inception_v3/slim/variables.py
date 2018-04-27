@@ -85,7 +85,6 @@ from __future__ import print_function
 import tensorflow as tf
 
 from inception_v3.slim import scopes
-#from camelyon16.inception.slim import scopes
 
 # Collection containing all the variables created using slim.variables
 MODEL_VARIABLES = '_model_variables_'
@@ -241,7 +240,7 @@ def global_step(device=''):
     # Get the device for the variable.
     with tf.device(variable_device(device, 'global_step')):
       return tf.get_variable('global_step', shape=[], dtype=tf.int64,
-                             initializer=tf.zeros_initializer,
+                             initializer=tf.zeros_initializer(),
                              trainable=False, collections=collections)
 
 

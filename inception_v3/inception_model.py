@@ -1,132 +1,175 @@
-from __future__ import absolute_import #绝对引入
-from __future__ import division #精确除法
+# Copyright 2016 Google Inc. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+"""Build the Inception v3 network on ImageNet data set.
+
+The Inception v3 architecture is described in http://arxiv.org/abs/1512.00567
+
+Summary of available functions:
+ inference: Compute inference on the model inputs to make a prediction
+ loss: Compute the loss of the prediction with respect to the labels
+"""
+from __future__ import absolute_import
+from __future__ import division
 from __future__ import print_function
 
 import re
-import tensorflow as tf
-from inception_v3.slim import slim ##引入slim模块里面定义的v3模型
 
-# 执行main函数之前首先进行flags的解析，
-# 也就是说TensorFlow通过设置flags来传递tf.app.run()所需要的参数，
-# 我们可以直接在程序运行前初始化flags，也可以在运行程序的时候设置命令行参数来达到传参的目的。
+import tensorflow as tf
+from inception_v3.slim import slim
+
 FLAGS = tf.app.flags.FLAGS
 
-# 用多个GPU训练模型的时候，每个GPU上面都会对应一个tower，所以需要tower_name这个值来区分操作的对象 （通过前缀）
+# If a model is trained using multiple GPUs, prefix all Op names with tower_name
+# to differentiate the operations. Note that this prefix is removed from the
+# names of the summaries when visualizing a model.
 TOWER_NAME = 'tower'
 
-# BN的移动平均值的衰减系数
+# Batch normalization. Constant governing the exponential moving average of
+# the 'global' mean and variance for all activations.
 BATCHNORM_MOVING_AVERAGE_DECAY = 0.9997
 
-# 移动平均值的衰减系数
+# The decay to use for the moving average.
 MOVING_AVERAGE_DECAY = 0.9999
 
-# 下面的方法是定义用于训练的inference模型
+
 def inference(images, num_classes, for_training=False, restore_logits=True,
               scope=None):
-    """
-    :param images: 来自inputs()函数或者distorted_inputs()函数的返回值
-    :param num_classes: 类别的数量
-    :param for_training: 表明这个inference模型是用于训练的
-    :param restore_logits: 对用过不同的类别数量来微调模型是有帮助的
-    :param scope: 识别在哪一个tower上
-    :return: 三个返回值
-    """
-    # 与BN有关的参数列表，其中decay用到了上面定义的好的参数值
-    # epsilon是用来避免出现0变化
-    batch_norm_params = {
-        'decay': BATCHNORM_MOVING_AVERAGE_DECAY,
-        'epsilon': 0.001
-    }
+    """Build Inception v3 model architecture.
 
-    # slim模块的ops里面定义了一些经典的网络层，比如卷积层、全连接层
-    # 下面这行代码将卷积层和全连接层的权重衰减系数都设置成0.00004
+    See here for reference: http://arxiv.org/abs/1512.00567
+
+    Args:
+      images: Images returned from inputs() or distorted_inputs().
+      num_classes: number of classes
+      for_training: If set to `True`, build the inference model for training.
+        Kernels that operate differently for inference during training
+        e.g. dropout, are appropriately configured.
+      restore_logits: whether or not the logits layers should be restored.
+        Useful for fine-tuning a model with different num_classes.
+      scope: optional prefix string identifying the ImageNet tower.
+      reuse: weather to reuse weights or not (used for evaluation)
+
+    Returns:
+      Logits. 2-D float Tensor.
+      Auxiliary Logits. 2-D float Tensor of side-head. Used for training only.
+    """
+    # Arjun - check
+    # Parameters for BatchNorm.
+    batch_norm_params = {
+        # Decay for the moving averages.
+        'decay': BATCHNORM_MOVING_AVERAGE_DECAY,
+        # epsilon to prevent 0s in variance.
+        'epsilon': 0.001,
+    }
+    # Set weight_decay for weights in Conv and FC layers.
     with slim.arg_scope([slim.ops.conv2d, slim.ops.fc], weight_decay=0.00004):
-        # 下面这行代码是将卷积函数里面的标准差设置成0.1，激活函数选用relu，batch_norm的参数用上面定义好的参数
         with slim.arg_scope([slim.ops.conv2d],
                             stddev=0.1,
                             activation=tf.nn.relu,
-                            batch_norm_params = batch_norm_params):
-            # 下面的操作是将一些参数传到slim模块原装的V3模型里面，具体点就是
-            # inception_v3()这个函数，这里参数有一些是上面定义好的或者inference()
-            # 函数传进来的，也有现在才定义的
+                            batch_norm_params=batch_norm_params):
             logits, end_points = slim.inception.inception_v3(
                 images,
                 dropout_keep_prob=0.8,
                 num_classes=num_classes,
                 is_training=for_training,
                 restore_logits=restore_logits,
-                scope=scope
-            )
+                scope=scope)
 
-            # inception_v3()的输出值end_points作为参数值，
-            # 调用下面定义好的方法来实现训练过程的可视化
-            _activation_summaries(end_points)
+    # Add summaries for viewing model statistics on TensorBoard.
+    _activation_summaries(end_points)
 
-            # 辅助分类节点，帮助预测分类结果
-            auxiliary_logits = end_points['aux_logits']
+    # Grab the logits associated with the side head. Employed during training.
+    auxiliary_logits = end_points['aux_logits']
 
-            # 返回值：logits输出层的输出，未归一化的概率 inception_v3()的返回值之一
-            #        auxiliary_logits
-            #        end_points['predictions']
-            return logits, auxiliary_logits, end_points['predictions']
+    return logits, auxiliary_logits, end_points['predictions']
 
 
-# 为上面的inference()方法服务, 训练过程可视化
-def _activation_summary(x):
-    """
-    用直方图的形式或者通过对激活函数稀疏度的度量来总结激活函数
-    :param x: Tensor
-    :return:
-    """
-    # 用正则表达式模块(re)的sub()函数来处理TOWER_NAME
-    tensor_name = re.sub('%s_[0-9]*/]' % TOWER_NAME, '', x.op.name)
-    tf.summary.histogram(tensor_name + '/activations', x)
-    tf.summary.scalar(tensor_name + '/sparsity', tf.nn.zero_fraction(x))
-
-# 用到上面定义好的_activation_summary()函数，只不过这里的参数不是tensor，而是endpoints
-# 解析endpoints里面的tensor，然后调用上面定义好的方法，实现训练过程的可视化
-def _activation_summaries(endpoints):
-    with tf.name_scope('summaries'):
-        for act in endpoints.values():
-            _activation_summary(act)
-
-
-# 将模型里面所有的损失加到一起
 def loss(logits, labels, batch_size=None):
+    """Adds all losses for the model.
+
+    Note the final loss is not returned. Instead, the list of losses are collected
+    by slim.losses. The losses are accumulated in tower_loss() and summed to
+    calculate the total loss.
+
+    Args:
+      logits: List of logits from inference(). Each entry is a 2-D float Tensor.
+      labels: Labels from distorted_inputs or inputs(). 1-D tensor
+              of shape [batch_size]
+      batch_size: integer
     """
-    需要注意的是最后的损失并没有返回，而是放到slim.losses里面，损失在tower_loss()里面进行叠加，
-    最后叠加的结果就是我们想要的总体损失
-    :param logits: 来自上面定义的inference()函数的返回值，一个列表，列表里面的每一个条目都是一个二维的浮点张量tensor
-    :param labels: 来自distorted_inputs()函数或者inputs()函数的返回值，上面定义的inference()函数也用到这两个
-                   函数的返回值images，是shape [batch_size]的一维张量tensor
-    :param batch_size:
-    :return:
-    """
-    # batch_size的预设值是None，如果真的没有传入batch_size这个参数，那么就用flags里面已经定义好的batch_size值
     if not batch_size:
         batch_size = FLAGS.batch_size
 
-    # 将标签labels重新塑造成一个密集的张量，为slim模块losses类计算总体损失服务
+    # Reshape the labels into a dense Tensor of
+    # shape [FLAGS.batch_size, num_classes].
     sparse_labels = tf.reshape(labels, [batch_size, 1])
-    # 指数 indices
     indices = tf.reshape(tf.range(batch_size), [batch_size, 1])
-    concated = tf.concat_v2([indices, sparse_labels],1)
+    concated = tf.concat([indices, sparse_labels], 1)
     num_classes = logits[0].get_shape()[-1].value
-    # 稀疏转密集
     dense_labels = tf.sparse_to_dense(concated,
                                       [batch_size, num_classes],
                                       1.0, 0.0)
 
-    # 开始使用slim模块的losses类计算损失
-    # main softmax prediction选用的损失函数是交叉熵损失，标签参数选用的是上面定义好的密集标签
+    # Cross entropy loss for the main softmax prediction.
     slim.losses.cross_entropy_loss(logits[0],
                                    dense_labels,
                                    label_smoothing=0.1,
                                    weight=1.0)
 
-    # auxiliary softmax head选用的损失函数也是交叉熵损失，这里用到一个scope参数来确保它在辅助模型域里面
+    # Cross entropy loss for the auxiliary softmax head.
     slim.losses.cross_entropy_loss(logits[1],
                                    dense_labels,
                                    label_smoothing=0.1,
                                    weight=0.4,
                                    scope='aux_loss')
+
+    # # Cross entropy loss for the main softmax prediction.
+    #
+    # tf.losses.sparse_softmax_cross_entropy(labels,
+    #                                        logits[0],
+    #                                        weights=1.0)
+    #
+    # # slim.losses.sparse_softmax_cross_entropy(logits[0],
+    # #                                       labels,
+    # #                                       label_smoothing=0.1,
+    # #                                       weight=1.0)
+    #
+    # # Cross entropy loss for the auxiliary softmax head.
+    # tf.losses.sparse_softmax_cross_entropy(labels,
+    #                                        logits[1],
+    #                                        weights=0.4,
+    #                                        scope='aux_loss')
+
+
+def _activation_summary(x):
+    """Helper to create summaries for activations.
+
+    Creates a summary that provides a histogram of activations.
+    Creates a summary that measure the sparsity of activations.
+
+    Args:
+      x: Tensor
+    """
+    # Remove 'tower_[0-9]/' from the name in case this is a multi-GPU training
+    # session. This helps the clarity of presentation on tensorboard.
+    tensor_name = re.sub('%s_[0-9]*/' % TOWER_NAME, '', x.op.name)
+    tf.summary.histogram(tensor_name + '/activations', x)
+    tf.summary.scalar(tensor_name + '/sparsity', tf.nn.zero_fraction(x))
+
+
+def _activation_summaries(endpoints):
+    with tf.name_scope('summaries'):
+        for act in endpoints.values():
+            _activation_summary(act)

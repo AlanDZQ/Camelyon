@@ -21,7 +21,6 @@ from __future__ import print_function
 import tensorflow as tf
 
 from inception_v3.slim import losses
-#from camelyon16.inception.slim import losses
 
 
 class LossesTest(tf.test.TestCase):

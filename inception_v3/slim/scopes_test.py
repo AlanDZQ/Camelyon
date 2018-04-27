@@ -19,9 +19,7 @@ from __future__ import print_function
 
 
 import tensorflow as tf
-
 from inception_v3.slim import scopes
-#from camelyon16.inception.slim import scopes
 
 
 @scopes.add_arg_scope

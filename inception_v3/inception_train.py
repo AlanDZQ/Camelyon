@@ -1,313 +1,337 @@
+# Copyright 2016 Google Inc. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+"""A library to train Inception using multiple GPU's with synchronous updates.
 """
-用多个同步更新的GPU来训练inception_model
-"""
-from __future__ import absolute_import # 绝对引入
-from __future__ import division # 精确除法
+from __future__ import absolute_import
+from __future__ import division
 from __future__ import print_function
 
 import sys
-# #新添加的目录会优先于其他目录被import检查
 sys.path.insert(0, '/home/arjun/MS/Thesis/CAMELYON-16/source')
-
-import copy #Python中的对象之间赋值时是按引用传递的，如果需要拷贝对象，需要使用标准库中的copy模块。
+import copy
 import os.path
 import re
-
 import time
 from datetime import datetime
 
 import numpy as np
 import tensorflow as tf
 
-from inception_v3 import image_processing # 导入预处理模块
-from inception_v3 import inception_model as inception_model #导入inception_model
-from inception_v3.dataset import Dataset # 数据集管理类
-from inception_v3.slim import slim # slim模块
-import  external.utils as utils # 路径管理类
+from inception_v3 import image_processing
+from inception_v3 import inception_model as inception
+from inception_v3.dataset import Dataset
+from inception_v3.slim import slim
+import utils as utils
 
-# 数据集合的名称
-DATA_SET_NAME = 'Camelyon'
 
-# 设置flags来传递tf.app.run()所需要的参数
+
 FLAGS = tf.app.flags.FLAGS
 
-# 写日志和检查点的目录
-# checkpoint: 依赖代码而创建模型的一种格式
-tf.app.flags.DEFINE_string('train_dir', utils.TRAIN_DIR,
-                           """Directory where to write event logs """
-                           """and checkpoint.""")
-
-# 要运行的batches数目，最大 1M
-tf.app.flags.DEFINE_integer('max_steps', 1000000,
+tf.app.flags.DEFINE_string('train_logs', utils.TRAIN_LOGS,
+                           """Directory where to write event logs """)
+tf.app.flags.DEFINE_string('train_models', utils.TRAIN_MODELS,"""where to save train models""")
+tf.app.flags.DEFINE_integer('max_steps', 1000000,  # 1M
                             """Number of batches to run.""")
-
-# subset的值要么是'train' 要么是 'validation'
-# 这里首先选择的是'train'
 tf.app.flags.DEFINE_string('subset', 'train',
                            """Either 'train' or 'validation'.""")
 
-# 使用的GPU数量 2
+# Flags governing the hardware employed for running tf.
 tf.app.flags.DEFINE_integer('num_gpus', 2,
                             """How many GPUs to use.""")
-
-# 是否记录设备的放置情况: 否
 tf.app.flags.DEFINE_boolean('log_device_placement', False,
                             """Whether to log device placement.""")
 
-# 微调是否设置，如果设置了微调，那么就随机初始化最后一层的权重以便于在新的任务上训练网络：没有设置
-tf.app.flags.DEFINE_boolean('fine_tune', False,
+# Flags governing the type of training.
+tf.app.flags.DEFINE_boolean('fine_tune', True,
                             """If set, randomly initialize the final layer """
                             """of weights in order to train the network on a """
                             """new task.""")
-
-# 预训练模型的检查点路径，如果指定了相关路径，那么就在开始任何训练之前重新恢复预训练的模型
 tf.app.flags.DEFINE_string('pretrained_model_checkpoint_path', utils.FINE_TUNE_MODEL_CKPT_PATH,
                            """If specified, restore this pretrained model """
                            """before beginning any training.""")
 
-# 下面是有关学习率的相关参数设置，至于学习率该如何控制，参考以下论文链接：
-# http://arxiv.org/abs/1404.5997
-
-# 最开始的学习率
+# **IMPORTANT**
+# Please note that this learning rate schedule is heavily dependent on the
+# hardware architecture, batch size and any changes to the model architecture
+# specification. Selecting a finely tuned learning rate schedule is an
+# empirical process that requires some experimentation. Please see README.md
+# more guidance and discussion.
+#
+# With 8 Tesla K40's and a batch size = 256, the following setup achieves
+# precision@1 = 73.5% after 100 hours and 100K steps (20 epochs).
+# Learning rate decay factor selected from http://arxiv.org/abs/1404.5997.
 tf.app.flags.DEFINE_float('initial_learning_rate', 0.01,  # 1*e-2
                           """Initial learning rate.""")
-
-# 每次学习率衰退之后的Epochs数量
 tf.app.flags.DEFINE_float('num_epochs_per_decay', 30.0,
                           """Epochs after which learning rate decays.""")
-
-# 每次学习率衰退之后程序执行的步数
 tf.app.flags.DEFINE_integer('num_steps_per_decay', 60000,
                             """Steps after which learning rate decays.""")
-# 学习率的衰退因子
+
 tf.app.flags.DEFINE_float('learning_rate_decay_factor', 0.1,
                           """Learning rate decay factor.""")
 
-#与学习率调度有关的常量
-RMSPROP_DECAY = 0.9
-RMSPROP_MOMENTUM = 0.9
-RMSPROP_EPSILON = 1.0
+# Constants dictating the learning rate schedule.
+RMSPROP_DECAY = 0.9  # Decay term for RMSProp.
+RMSPROP_MOMENTUM = 0.9  # Momentum in RMSProp.
+RMSPROP_EPSILON = 1.0  # Epsilon term for RMSProp.
 
-# 在运行模型的时候，这个方法计算单个tower上的总体损失，这里有一个'batch splitting'的
-# 关机制，这意味着如果batch size的数量是32，而gpu的数量是2，那么每个tower上面将会运行batch size = 16的图像
+
 def _tower_loss(images, labels, num_classes, scope, reuse_variables=None):
-    '''
+    """Calculate the total loss on a single tower running the ImageNet model.
 
-    :param images: 四维张量tensor  [batch_size, FLAGS.image_size, FLAGS.image_size, 3]
-    :param labels: 一维的整数张量
-    :param num_classes: 种类的数量
-    :param scope: 模型运行在哪个tower上的标识
-    :param reuse_variables:
-    :return: 返回一个包含一批数据总体损失的张量
-    '''
+    We perform 'batch splitting'. This means that we cut up a batch across
+    multiple GPU's. For instance, if the batch size = 32 and num_gpus = 2,
+    then each tower will operate on an batch of 16 images.
 
-    # logits: 未归一化的概率， 输出层的输出，一般也就是 softmax层的输入
-    # 微调模型的时候，我们不会恢复logits, 这个参数值设置是为inception_model里面的inference()方法服务的
+    Args:
+      images: Images. 4D tensor of size [batch_size, FLAGS.image_size,
+                                         FLAGS.image_size, 3].
+      labels: 1-D integer Tensor of [batch_size].
+      num_classes: number of classes
+      scope: unique prefix string identifying the ImageNet tower, e.g.
+        'tower_0'.
+
+    Returns:
+       Tensor of shape [] containing the total loss for a batch of data
+    """
+    # When fine-tuning a model, we do not restore the logits but instead we
+    # randomly initialize the logits. The number of classes in the output of the
+    # logit is the number of classes in specified Dataset.
     restore_logits = not FLAGS.fine_tune
 
-    # 之前在inception_model这个文件里面写一个inference模型，也就是将一些参数放到
-    # slim模块中设计好的模型里面
-    # 这里我们建立inference的graph, reuse的值用方法里面传入的参数值
+    # Build inference Graph.
+
     with tf.variable_scope(tf.get_variable_scope(), reuse=reuse_variables):
-        # 开始用到了inception_model里面定义的inference方法，来训练模型
-        # 基本上都是用到_tower_loss() 方法里面传入的参数
-        logits = inception_model.inference(images,
-                                           num_classes,
-                                           for_training=True,
-                                           restore_logits = restore_logits,
-                                           scope= scope)
+        logits = inception.inference(images, num_classes, for_training=True,
+                                     restore_logits=restore_logits,
+                                     scope=scope)
 
-        # 借用inception_model里面定义好的loss函数来计算tower上的总体损失
-        # 这里就是计算每个tower上面的batch数目
-        split_batch_size = images.get_shape().as_list()[0]
-        # logit参数就是inference()方法的输出值之一， labels是传进来的参数值
-        inception_model.loss(logits,labels,batch_size=split_batch_size)
+    # Build the portion of the Graph calculating the losses. Note that we will
+    # assemble the total_loss using a custom function below.
+    split_batch_size = images.get_shape().as_list()[0]
+    inception.loss(logits, labels, batch_size=split_batch_size)
 
-        # 将当前tower的损失组织起来, scope来指定是哪个tower
-        losses = tf.get_collection(slim.losses.LOSSES_COLLECTION, scope)
+    # Assemble all of the losses for the current tower only.
+    losses = tf.get_collection(slim.losses.LOSSES_COLLECTION, scope)
 
-        # 将这些损失组织好了之后，计算这些损失的总和，和的结果就是当前tower的总体损失
-        regularization_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
-        total_loss = tf.add_n(losses + regularization_losses, name='total_loss')
+    # Calculate the total loss for the current tower.
+    regularization_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
+    total_loss = tf.add_n(losses + regularization_losses, name='total_loss')
 
-        # 计算个体损失和总体损失的移动平均 moving average
-        loss_averages = tf.train.ExponentialMovingAverage(0.9, name='avg')
-        loss_averages_op = loss_averages.apply(losses+ [total_loss])
+    # Compute the moving average of all individual losses and the total loss.
+    loss_averages = tf.train.ExponentialMovingAverage(0.9, name='avg')
+    loss_averages_op = loss_averages.apply(losses + [total_loss])
 
-        # 将个体损失和总体损失标量化
-        for l in losses + [total_loss]:
-            # 如果是一个多GPU训练会话的话，那么就通过正则表达式移除相关的前缀名，这样有助于可视化
-            loss_name = re.sub('%s_[0-9]*/' % inception_model.TOWER_NAME, '', l.op.name)
+    # Attach a scalar summary to all individual losses and the total loss; do the
+    # same for the averaged version of the losses.
+    for l in losses + [total_loss]:
+        # Remove 'tower_[0-9]/' from the name in case this is a multi-GPU training
+        # session. This helps the clarity of presentation on TensorBoard.
+        loss_name = re.sub('%s_[0-9]*/' % inception.TOWER_NAME, '', l.op.name)
+        # Name each loss as '(raw)' and name the moving average version of the loss
+        # as the original loss name.
+        tf.summary.scalar(loss_name + ' (raw)', l)
+        tf.summary.scalar(loss_name, loss_averages.average(l))
+    with tf.control_dependencies([loss_averages_op]):
+        total_loss = tf.identity(total_loss)
+    return total_loss
 
-            # 将每个损失的名称改为'(raw)'， 此时损失原本的名称表示的是移动平均化之后的损失
-            tf.summary.scalar(loss_name + ' (raw)', l)
-            tf.summary.scalar(loss_name, loss_averages.average(1))
 
-        with tf.control_dependencies([loss_averages_op]):
-            total_loss = tf.identity(total_loss)
-        return total_loss #返回总体损失、
-
-# 计算所有tower里面每个共享变量的平均梯度，这个功能提供了跨所有tower的同步点
 def _average_gradients(tower_grads):
-    '''
-     输入参数是 （梯度，变量）的元组列表，
-     返回值还是（梯度，变量）的元组列表，只不过所有tower的梯度都被平均化过
-    :param tower_grads:
-    :return:
-    '''
+    """Calculate the average gradient for each shared variable across all towers.
+
+    Note that this function provides a synchronization point across all towers.
+
+    Args:
+      tower_grads: List of lists of (gradient, variable) tuples. The outer list
+        is over individual gradients. The inner list is over the gradient
+        calculation for each tower.
+    Returns:
+       List of pairs of (gradient, variable) where the gradient has been averaged
+       across all towers.
+    """
     average_grads = []
-    # zip函数将可迭代对象处理成一个元组列表: ((grad0_gpu0, var0_gpu0), ... , (grad0_gpuN, var0_gpuN))
     for grad_and_vars in zip(*tower_grads):
+        # Note that each grad_and_vars looks like the following:
+        #   ((grad0_gpu0, var0_gpu0), ... , (grad0_gpuN, var0_gpuN))
         grads = []
         for g, _ in grad_and_vars:
-            # 添加0维度到梯度里面来展示tower的信息
+            # Add 0 dimension to the gradients to represent the tower.
             expanded_g = tf.expand_dims(g, 0)
+
+            # Append on a 'tower' dimension which we will average over below.
             grads.append(expanded_g)
 
-        # 在 tower 维度0 进行平均化操作
-        grad = tf.concat_v2(grads, 0)
+        # Average over the 'tower' dimension.
+        grad = tf.concat(grads, 0)
         grad = tf.reduce_mean(grad, 0)
 
-        #变量是冗余的，因为它们在所有tower里面共享的，所以我们只需要返回第一个指向变量的tower指针
+        # Keep in mind that the Variables are redundant because they are shared
+        # across towers. So .. we will just return the first tower's pointer to
+        # the Variable.
         v = grad_and_vars[0][1]
-        grad_and_vars = (grad, v) # 经过处理之后的（梯度、变量）元组
-        average_grads.append(grad_and_vars)
+        grad_and_var = (grad, v)
+        average_grads.append(grad_and_var)
     return average_grads
 
-# 在一个训练集合上通过一些步骤来进行训练
+
 def train(dataset):
+    """Train on dataset for a number of steps."""
     with tf.Graph().as_default(), tf.device('/cpu:0'):
-        # 创建一个变量来计算train的调用次数，这个数字也是batch的数量和gpu数量的乘积
+        # Create a variable to count the number of train() calls. This equals the
+        # number of batches processed * FLAGS.num_gpus.
         global_step = tf.get_variable(
-            'global_step',[],
+            'global_step', [],
             initializer=tf.constant_initializer(0), trainable=False)
 
-        # 计算学习率的调度
+        # Calculate the learning rate schedule.
         num_batches_per_epoch = (dataset.num_examples_per_epoch() /
                                  FLAGS.batch_size)
-        decay_steps = int(num_batches_per_epoch * FLAGS.num_epochs_per_decay)
+        # decay_steps = int(num_batches_per_epoch * FLAGS.num_epochs_per_decay)
 
-        # 学习率会根据步数以指数方式进行衰减
-        # 通常的操作是首先使用较大学习率(目的：为快速得到一个比较优的解)
-        # 然后通过迭代逐步减小学习率(目的：为使模型在训练后期更加稳定)
+        # Decay the learning rate exponentially based on the number of steps.
         lr = tf.train.exponential_decay(FLAGS.initial_learning_rate,
                                         global_step,
                                         60000,
                                         FLAGS.learning_rate_decay_factor,
                                         staircase=True)
 
-        # 创建一个梯度下降的优化器
+        # Create an optimizer that performs gradient descent.
         opt = tf.train.GradientDescentOptimizer(lr)
 
-        # 获取图像和标签，然后根据GPU的个数，将它们分到各自的batch里面
-        assert FLAGS.batch_size % FLAGS.num_gpus == 0, (
-            'Batch size must be divisible by number of GPUs')
-        split_batch_size = int(FLAGS.batch_size / FLAGS.num_gpus)
+        # opt = tf.train.RMSPropOptimizer(lr, RMSPROP_DECAY,
+        #                                 momentum=RMSPROP_MOMENTUM,
+        #                                 epsilon=RMSPROP_EPSILON)
 
-        # 当GPU tower的数量增加的时候，预处理的线程也会相应的增加
+        # Get images and labels for ImageNet and split the batch across GPUs.
+        #代码无用？多个batch在多个GPU上共同训练
+        # assert FLAGS.batch_size % FLAGS.num_gpus == 0, (
+        #     'Batch size must be divisible by number of GPUs')
+        #split_batch_size = int(FLAGS.batch_size / FLAGS.num_gpus)
+
+        # Override the number of preprocessing threads to account for the increased
+        #
+        # num_preprocess_threads: 有多少个线程参加IO读取，每个GPU4个．
         num_preprocess_threads = FLAGS.num_preprocess_threads * FLAGS.num_gpus
-        # 这里就用到预处理的distorted_inputs()方法增加训练的样本
+        #
         images, labels = image_processing.distorted_inputs(
             dataset,
             num_preprocess_threads=num_preprocess_threads)
 
-        # 这里用到copy模块的copy()方法
         input_summaries = copy.copy(tf.get_collection(tf.GraphKeys.SUMMARIES))
 
+        # updated - Arjun
         num_classes = dataset.num_classes()
 
-        # 依据tower将images和labels划开
+        # Split the batch of images and labels for towers.
         images_splits = tf.split(images, FLAGS.num_gpus, axis=0)
         labels_splits = tf.split(labels, FLAGS.num_gpus, axis=0)
 
-        # 计算每一个tower里面模型的梯度
+        # Calculate the gradients for each model tower.
         tower_grads = []
         reuse_variables = None
         for i in range(FLAGS.num_gpus):
-            # 这里选定的设备是GPU
             with tf.device('/gpu:%d' % i):
-                # 定义scope参数
-                with tf.name_scope('%s_%d' % (inception_model.TOWER_NAME, i)) as scope:
-                    # 强制所有变量停留在CPU上面, 用到slim模块的参数作用域来处理
+                with tf.name_scope('%s_%d' % (inception.TOWER_NAME, i)) as scope:
+                    # Force all Variables to reside on the CPU.
                     with slim.arg_scope([slim.variables.variable], device='/cpu:0'):
-                        # 计算模型里面一个tower的损失，这里用到的就是上面定义的损失函数
-                        loss = _tower_loss(images_splits[i],
-                                           labels_splits[i],
-                                           num_classes,
-                                           scope,
-                                           reuse_variables)
-                    # 注意之前225行的reuse_variables的参数值设置的None
+                        # Calculate the loss for one tower of the ImageNet model. This
+                        # function constructs the entire ImageNet model but shares the
+                        # variables across all towers.
+                        loss = _tower_loss(images_splits[i], labels_splits[i], num_classes,
+                                           scope, reuse_variables)
+
+                    # Reuse variables for the next tower.
                     reuse_variables = True
 
-                    # 保留最后一个tower的summaries, scope还是上面定义的scope
+                    # Retain the summaries from the final tower.
                     summaries = tf.get_collection(tf.GraphKeys.SUMMARIES, scope)
 
-                    # 仅仅保留最后的tower的BN更新操作
-                    # 理想情况下，我们应该从所有tower获取更新，但是这些统计数据积累速度非常之快
-                    # 所以我们可以忽略来自其他tower的统计数据，而不会造成重大损害
-                    # 用到了slim模块定义的相关方法
+                    # Retain the Batch Normalization updates operations only from the
+                    # final tower. Ideally, we should grab the updates from all towers
+                    # but these stats accumulate extremely fast so we can ignore the
+                    # other stats from the other towers without significant detriment.
                     batch_norm_updates = tf.get_collection(slim.ops.UPDATE_OPS_COLLECTION,
                                                            scope)
 
-                    #计算tower上的那一个batch数据的梯度, loss是上面算出来的指定tower的总体损失
+                    # Calculate the gradients for the batch of data on this ImageNet
+                    # tower.
                     grads = opt.compute_gradients(loss)
 
-                    # 跟踪所有tower上的梯度
+                    # Keep track of the gradients across all towers.
                     tower_grads.append(grads)
 
-        # 这里用到了上面定义好的方法来计算每个梯度上的平均值
+        # We must calculate the mean of each gradient. Note that this is the
+        # synchronization point across all towers.
         grads = _average_gradients(tower_grads)
 
-        # 为输入处理和总体步数，添加一个summarize
+        # Add a summaries for the input processing and global_step.
         summaries.extend(input_summaries)
 
-        # 添加一个跟踪学习率的summary
+        # Add a summary to track the learning rate.
         summaries.append(tf.summary.scalar('learning_rate', lr))
 
-        # 为梯度添加直方图
+        # Add histograms for gradients.
         for grad, var in grads:
             if grad is not None:
                 summaries.append(
                     tf.summary.histogram(var.op.name + '/gradients', grad))
 
-        # 应用相关梯度来调整共享变量， 选用优化器的相关方法
+        # Apply the gradients to adjust the shared variables.
         apply_gradient_op = opt.apply_gradients(grads, global_step=global_step)
 
-        # 为训练变量添加直方图
+        # Add histograms for trainable variables.
         for var in tf.trainable_variables():
             summaries.append(tf.summary.histogram(var.op.name, var))
 
-        # 跟踪训练变量的移动平均
-        # 需要注意的是我们维护了BN总体数据的一个双重平均，这是为了向后兼容我们以前的模型
+        # Track the moving averages of all trainable variables.
+        # Note that we maintain a "double-average" of the BatchNormalization
+        # global statistics. This is more complicated then need be but we employ
+        # this for backward-compatibility with our previous models.
         variable_averages = tf.train.ExponentialMovingAverage(
-            inception_model.MOVING_AVERAGE_DECAY, global_step)
+            inception.MOVING_AVERAGE_DECAY, global_step)
 
-        # “双重平均” 另外一平均
-        variable_to_average = (tf.trainable_variables() + tf.moving_average_variables())
-        variable_averages_op = variable_averages.apply(variable_to_average)
+        # Another possiblility is to use tf.slim.get_variables().
+        variables_to_average = (tf.trainable_variables() +
+                                tf.moving_average_variables())
+        variables_averages_op = variable_averages.apply(variables_to_average)
 
-        # 将所有的更新操作组织到一个单独的训练操作里面
+        # Group all updates to into a single train op.
         batch_norm_updates_op = tf.group(*batch_norm_updates)
-        train_op = tf.group(apply_gradient_op, variable_averages_op, batch_norm_updates_op)
+        train_op = tf.group(apply_gradient_op, variables_averages_op,
+                            batch_norm_updates_op)
 
-        #创建一个保存器
+        # Create a saver.
         saver = tf.train.Saver(tf.all_variables(), max_to_keep=1000)
 
-        # 从最后一个tower的summarize里面建立起summary操作
+        # Build the summary operation from the last tower summaries.
         summary_op = tf.summary.merge(summaries)
 
-        # 初始化
+        # Build an initialization operation to run below.
         init = tf.initialize_all_variables()
 
-        # 开始在Graph上面运行，allow_soft_placement必须设置为True
-        # 这是为了在GPU上面把tower建立起来，因为有一些操作没有GPU的实现
-        config = tf.ConfigProto(allow_soft_placement = True, log_device_placement=FLAGS.log_device_placement)
+        # Start running operations on the Graph. allow_soft_placement must be set to
+        # True to build towers on GPU, as some of the ops do not have GPU
+        # implementations.
+        config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=FLAGS.log_device_placement)
         config.gpu_options.per_process_gpu_memory_fraction = 0.5
         sess = tf.Session(config=config)
-        sess.run(init) # 运行
+        sess.run(init)
 
-        if FLAGS.pretrained_model_checkpoint_path:
-            # 断言这个为真： tf.gfile.Exists(FLAGS.pretrained_model_checkpoint_path)
+        if not FLAGS.fine_tune:
+            # assert tf.gfile.Exists(FLAGS.pretrained_model_checkpoint_path)
             print('model path: %s' % FLAGS.pretrained_model_checkpoint_path)
             variables_to_restore = tf.get_collection(
                 slim.variables.VARIABLES_TO_RESTORE)
@@ -316,14 +340,13 @@ def train(dataset):
             print('%s: Pre-trained model restored from %s' %
                   (datetime.now(), FLAGS.pretrained_model_checkpoint_path))
 
-        # 开始序列化运行
+        # Start the queue runners.这个函数将会启动输入管道的线程，填充样本到队列中，以便出队操作可以从队列中拿到样本
         tf.train.start_queue_runners(sess=sess)
 
         summary_writer = tf.summary.FileWriter(
-            FLAGS.train_dir,
-            graph_def=sess.graph.as_graph_def(add_shapes=True))
+            FLAGS.train_logs,
+            graph=sess.graph.as_graph_def(add_shapes=True))
 
-        # 一些日志记录
         for step in range(FLAGS.max_steps):
             start_time = time.time()
             _, loss_value = sess.run([train_op, loss])
@@ -342,12 +365,18 @@ def train(dataset):
                 summary_str = sess.run(summary_op)
                 summary_writer.add_summary(summary_str, step)
 
-            # 定期保存模型的检查点checkpoint
+            # Save the model checkpoint periodically.
             if step % 5000 == 0 or (step + 1) == FLAGS.max_steps:
-                checkpoint_path = os.path.join(FLAGS.train_dir, 'model.ckpt')
-                saver.save(sess, checkpoint_path, global_step=step) # 上面定义的保存器用在了这里
-
-dataset = Dataset(DATA_SET_NAME, utils.data_subset[0]) # 把数据集合里面的数据放进来
-train(dataset) # 执行训练操作
+                checkpoint_path = os.path.join(FLAGS.train_models, 'model.ckpt')
+                saver.save(sess, checkpoint_path, global_step=step)
 
 
+# dataset = Dataset(DATA_SET_NAME, utils.data_subset[0])
+# train(dataset)
+
+def main(unused_argv):
+    dataset = Dataset(utils.DATA_SET_NAME, utils.data_subset[0])
+    train(dataset)
+
+if __name__ == '__main__':
+    tf.app.run()
