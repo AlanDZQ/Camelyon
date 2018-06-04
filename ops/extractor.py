@@ -80,7 +80,7 @@ class PatchExtractor(object):
             Y = np.random.random_integers(b_y_start, high=b_y_end, size=utils.NUM_NEGATIVE_PATCHES_FROM_EACH_BBOX)
 
             for x, y in zip(X, Y):
-                if int(image_open[y, x]) == 1:
+                if int(image_open[y, x]) != 0:
                     x_large = x * mag_factor
                     y_large = y * mag_factor
                     patch = wsi_image.read_region((x_large, y_large), 0, (utils.PATCH_SIZE, utils.PATCH_SIZE))
@@ -123,7 +123,7 @@ class PatchExtractor(object):
             Y = np.random.random_integers(b_y_start, high=b_y_end, size=utils.NUM_NEGATIVE_PATCHES_FROM_EACH_BBOX)
 
             for x, y in zip(X, Y):
-                if int(image_open[y, x]) == 1:
+                if int(image_open[y, x]) != 0:
                     x_large = x * mag_factor
                     y_large = y * mag_factor
                     if int(tumor_gt_mask[y, x]) == 0:  # mask_gt does not contain tumor area

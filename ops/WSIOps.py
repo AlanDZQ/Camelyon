@@ -153,7 +153,7 @@ class WSIOps(object):
         for bounding_box in bounding_boxes:
             for x in range(bounding_box[0], bounding_box[0] + bounding_box[2]):
                 for y in range(bounding_box[1], bounding_box[1] + bounding_box[3]):
-                    if int(image_open[y, x]) == 1:
+                    if int(image_open[y, x]) != 0:
                         cv2.rectangle(rgb_bbox_split, (x, y), (x, y),
                                       color=(255, 0, 0), thickness=2)
 

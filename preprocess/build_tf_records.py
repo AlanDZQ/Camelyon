@@ -62,6 +62,7 @@ contains the following fields:
 
 If you data set involves bounding boxes, please look at build_imagenet_data.py.
 """
+
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -79,15 +80,16 @@ import utils as utils
 tf.app.flags.DEFINE_string('output_directory', utils.TRAIN_TF_RECORDS_DIR,
                            'Output data directory')
 
-tf.app.flags.DEFINE_integer('train_shards', 288,  # for N_TRAIN_SAMPLES / N_SAMPLES_PER_TRAIN_SHARD
+tf.app.flags.DEFINE_integer('train_shards', 6,  # for N_TRAIN_SAMPLES / N_SAMPLES_PER_TRAIN_SHARD
                             'Number of shards in training TFRecord files.')#整个数据集总shard数目
-tf.app.flags.DEFINE_integer('validation_shards', 40,  # N_VALIDATION_SAMPLES / N_SAMPLES_PER_VALIDATION_SHARD
+
+tf.app.flags.DEFINE_integer('validation_shards', 2,  # N_VALIDATION_SAMPLES / N_SAMPLES_PER_VALIDATION_SHARD
                             'Number of shards in validation TFRecord files.')
 
 tf.app.flags.DEFINE_integer('num_train_threads', 6,
                             'Number of threads to preprocess the images.')
 
-tf.app.flags.DEFINE_integer('num_val_threads', 5,
+tf.app.flags.DEFINE_integer('num_val_threads', 2,
                             'Number of threads to preprocess the images.')
 
 tf.app.flags.DEFINE_boolean('augmentation', False,
@@ -249,7 +251,7 @@ def _process_image_files_batch(coder, thread_index, ranges, name, file_names, la
     for s in range(num_shards_per_thread):
         # Generate a sharded version of the file name, e.g. 'train-00002-of-00010'
         shard = thread_index * num_shards_per_thread + s  #shard ID
-        output_filename = '%s-%.5d-of-%.5d' % (name, shard, num_shards)
+        output_filename = '%s_%.5d-of-%.5d.tfrecord' % (name, shard, num_shards)
         output_file = os.path.join(FLAGS.output_directory, output_filename)
         writer = tf.python_io.TFRecordWriter(output_file)
 
@@ -408,9 +410,8 @@ def main(unused_argv):
     print('Saving results to %s' % FLAGS.output_directory)
 
     # Run it!
-    #_process_dataset(utils.PREFIX_SHARD_VALIDATION, utils.PATCHES_VALIDATION_DIR,
-    #                 FLAGS.validation_shards, FLAGS.num_val_threads)
     _process_dataset(utils.PREFIX_SHARD_TRAIN, utils.PATCHES_TRAIN_DIR, FLAGS.train_shards, FLAGS.num_train_threads)
+    _process_dataset(utils.PREFIX_SHARD_VALIDATION, utils.PATCHES_VALIDATION_DIR, FLAGS.validation_shards, FLAGS.num_val_threads)
 
 
 if __name__ == '__main__':

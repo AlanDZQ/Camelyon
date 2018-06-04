@@ -34,11 +34,12 @@ def extract_positive_patches_from_tumor_wsi(wsi_ops, patch_extractor, patch_inde
                                                                                  patch_save_dir, patch_prefix,
                                                                                  patch_index)
         duration = time.time() - start
-        print('Positive patch count: %d and duration is %f' % (patch_index - utils.PATCH_INDEX_POSITIVE,duration))
+        print('Positive patch count: %d and duration is %f' % (patch_index - utils.PATCH_INDEX_POSITIVE, duration))
         wsi_image.close()
     end = time.time()
     print('extract positive patches average time is %f' % ((end - begin) / (int(patch_index) - 70000)))
     return patch_index
+
 
 def extract_negative_patches_from_normal_wsi(wsi_ops, patch_extractor, patch_index, augmentation=False):
     """
@@ -56,57 +57,57 @@ def extract_negative_patches_from_normal_wsi(wsi_ops, patch_extractor, patch_ind
     # wsi_paths = wsi_paths[61:]
 
     patch_save_dir = utils.PATCHES_VALIDATION_AUG_NEGATIVE_PATH if augmentation \
-        else utils.EXTRACTED_PATCHES_NORMAL_PATH
+        else utils.EXTRACTED_PATCHES_NEGATIVE_PATH
     patch_prefix = utils.PATCH_AUG_NORMAL_PREFIX if augmentation else utils.PATCH_NORMAL_PREFIX
-    begin=time.time()
+    begin = time.time()
     for image_path in wsi_paths:
         print('extract_negative_patches_from_normal_wsi(): %s' % utils.get_filename_from_path(image_path))
         start = time.time()
         wsi_image, rgb_image, level_used = wsi_ops.read_wsi_normal(image_path)
         assert wsi_image is not None, 'Failed to read Whole Slide Image %s.' % image_path
 
-        bounding_boxes,_, image_open = wsi_ops.find_roi_bbox(np.array(rgb_image))
+        bounding_boxes, _, image_open = wsi_ops.find_roi_bbox(np.array(rgb_image))
 
         patch_index = patch_extractor.extract_negative_patches_from_normal_wsi(wsi_image, image_open,
                                                                                level_used,
                                                                                bounding_boxes,
                                                                                patch_save_dir, patch_prefix,
-                                                                            patch_index)
+                                                                               patch_index)
         duration = time.time() - start
-        print('Negative patches count: %d and duration is %f' % (patch_index - utils.PATCH_INDEX_NEGATIVE,duration))
+        print('Negative patches count: %d and duration is %f' % (patch_index - utils.PATCH_INDEX_NEGATIVE, duration))
         wsi_image.close()
-    end=time.time()
-    print('extract normal patches average time is %f' % ((end-begin)/(int(patch_index)-70000)))
+    end = time.time()
+    print('extract normal patches average time is %f' % ((end - begin) / (int(patch_index) - 70000)))
     return patch_index
 
+
 def extract_negative_patches_from_tumor_wsi(wsi_ops, patch_extractor, patch_index, augmentation=False):
-    wsi_paths = glob.glob(os.path.join(utils.TUMOR_WSI_PATH, '*.tif'))
+    wsi_paths = glob.glob(os.path.join(utils.TRAIN_TUMOR_WSI_PATH, '*.tif'))
     wsi_paths.sort()
-    mask_paths = glob.glob(os.path.join(utils.TUMOR_MASK_PATH, '*.tif'))
+    mask_paths = glob.glob(os.path.join(utils.TRAIN_TUMOR_MASK_PATH, '*.tif'))
     mask_paths.sort()
 
     image_mask_pair = zip(wsi_paths, mask_paths)
     image_mask_pair = list(image_mask_pair)
     # image_mask_pair = image_mask_pair[67:68]
 
-    patch_save_dir = utils.PATCHES_TRAIN_AUG_NEGATIVE_PATH if augmentation else utils.PATCHES_TRAIN_NEGATIVE_PATH
+    patch_save_dir = utils.PATCHES_VALIDATION_AUG_NEGATIVE_PATH if augmentation else utils.EXTRACTED_PATCHES_NEGATIVE_PATH
     patch_prefix = utils.PATCH_AUG_NORMAL_PREFIX if augmentation else utils.PATCH_NORMAL_PREFIX
     for image_path, mask_path in image_mask_pair:
         print('extract_negative_patches_from_tumor_wsi(): %s' % utils.get_filename_from_path(image_path))
-        start=time.time()
+        start = time.time()
         wsi_image, rgb_image, _, tumor_gt_mask, level_used = wsi_ops.read_wsi_tumor(image_path, mask_path)
         assert wsi_image is not None, 'Failed to read Whole Slide Image %s.' % image_path
 
-        bounding_boxes, image_open = wsi_ops.find_roi_bbox(np.array(rgb_image))
+        bounding_boxes, _,image_open = wsi_ops.find_roi_bbox(np.array(rgb_image))
 
         patch_index = patch_extractor.extract_negative_patches_from_tumor_wsi(wsi_image, np.array(tumor_gt_mask),
                                                                               image_open, level_used,
                                                                               bounding_boxes, patch_save_dir,
                                                                               patch_prefix,
                                                                               patch_index)
-        duration=time.time()-start
+        duration = time.time() - start
         print('Negative patches count: %d and duration is %f' % (patch_index - utils.PATCH_INDEX_NEGATIVE, duration))
-
 
         wsi_image.close()
 
@@ -218,15 +219,12 @@ def extract_patches_from_heatmap_false_region_normal(wsi_ops, patch_extractor, p
     return patch_index
 
 
-
-
-
 def extract_patches(ops, pe):
     patch_index_positive = utils.PATCH_INDEX_POSITIVE
     patch_index_negative = utils.PATCH_INDEX_NEGATIVE
-    # patch_index_negative = extract_negative_patches_from_tumor_wsi(ops, pe, patch_index_negative)
-    extract_negative_patches_from_normal_wsi(ops, pe, patch_index_negative)
-    #extract_positive_patches_from_tumor_wsi(ops, pe, patch_index_positive)
+    patch_index_negative = extract_negative_patches_from_tumor_wsi(ops, pe, patch_index_negative)
+    # extract_negative_patches_from_normal_wsi(ops, pe, patch_index_negative)
+    extract_positive_patches_from_tumor_wsi(ops, pe, patch_index_positive)
 
 
 def extract_patches_augmented(ops, pe):
@@ -245,8 +243,5 @@ def extract_patches_augmented(ops, pe):
 
 
 if __name__ == '__main__':
-
     extract_patches(WSIOps(), PatchExtractor())
-
-
-    #extract_patches_augmented(WSIOps(), PatchExtractor())
+    # extract_patches_augmented(WSIOps(), PatchExtractor())
